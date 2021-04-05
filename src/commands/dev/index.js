@@ -5,6 +5,8 @@ const process = require('process')
 const { flags: flagsLib } = require('@oclif/command')
 const boxen = require('boxen')
 const chalk = require('chalk')
+const fetch = require('node-fetch')
+const waitFor = require('p-wait-for')
 const StaticServer = require('static-server')
 const stripAnsiCc = require('strip-ansi-control-characters')
 const waitPort = require('wait-port')
@@ -13,13 +15,18 @@ const wrapAnsi = require('wrap-ansi')
 
 const Command = require('../../utils/command')
 const { serverSettings } = require('../../utils/detect-server')
-const { getSiteInformation, addEnvVariables } = require('../../utils/dev')
+const { getSiteInformation, injectEnvVariables } = require('../../utils/dev')
 const { startLiveTunnel } = require('../../utils/live-tunnel')
 const { NETLIFYDEV, NETLIFYDEVLOG, NETLIFYDEVWARN, NETLIFYDEVERR } = require('../../utils/logo')
 const openBrowser = require('../../utils/open-browser')
 const { startProxy } = require('../../utils/proxy')
 const { startFunctionsServer } = require('../../utils/serve-functions')
 const { startForwardProxy } = require('../../utils/traffic-mesh')
+
+// 1 second
+const SERVER_POLL_INTERVAL = 1e3
+// 20 seconds
+const SERVER_POLL_TIMEOUT = 2e4
 
 const startFrameworkServer = async function ({ settings, log, exit }) {
   if (settings.noCmd) {
@@ -82,9 +89,38 @@ const startFrameworkServer = async function ({ settings, log, exit }) {
   })
 
   try {
-    const open = await waitPort({ port: settings.frameworkPort, output: 'silent', timeout: FRAMEWORK_PORT_TIMEOUT })
+    const open = await waitPort({
+      port: settings.frameworkPort,
+      output: 'silent',
+      timeout: FRAMEWORK_PORT_TIMEOUT,
+    })
+
     if (!open) {
       throw new Error(`Timed out waiting for port '${settings.frameworkPort}' to be open`)
+    }
+
+    if (!settings.disableLocalServerPolling) {
+      const waitForServerToRespond = async () => {
+        try {
+          await fetch(`http://localhost:${settings.frameworkPort}`, {
+            method: 'HEAD',
+            timeout: SERVER_POLL_INTERVAL,
+          })
+        } catch (_) {
+          return false
+        }
+
+        return true
+      }
+
+      try {
+        await waitFor(waitForServerToRespond, {
+          interval: SERVER_POLL_INTERVAL,
+          timeout: SERVER_POLL_TIMEOUT,
+        })
+      } catch (_) {
+        log(NETLIFYDEVWARN, 'Netlify Dev could not verify that your framework server is responding to requests.')
+      }
     }
   } catch (error) {
     log(NETLIFYDEVERR, `Netlify Dev could not connect to localhost:${settings.frameworkPort}.`)
@@ -100,7 +136,7 @@ const FRAMEWORK_PORT_TIMEOUT = 6e5
 
 const startProxyServer = async ({ flags, settings, site, log, exit, addonsUrls }) => {
   let url
-  if (flags.trafficMesh) {
+  if (flags.edgeHandlers || flags.trafficMesh) {
     url = await startForwardProxy({
       port: settings.port,
       frameworkPort: settings.frameworkPort,
@@ -109,6 +145,8 @@ const startProxyServer = async ({ flags, settings, site, log, exit, addonsUrls }
       log,
       debug: flags.debug,
       locationDb: flags.locationDb,
+      jwtRolesPath: settings.jwtRolePath,
+      jwtSecret: settings.jwtSecret,
     })
     if (!url) {
       log(NETLIFYDEVERR, `Unable to start forward proxy on port '${settings.port}'`)
@@ -165,6 +203,11 @@ const printBanner = ({ url, log }) => {
 }
 
 class DevCommand extends Command {
+  async init() {
+    this.commandContext = 'dev'
+    await super.init()
+  }
+
   async run() {
     this.log(`${NETLIFYDEV}`)
     const { error: errorExit, log, warn, exit } = this
@@ -174,13 +217,21 @@ class DevCommand extends Command {
     config.build = { ...config.build }
     const devConfig = {
       framework: '#auto',
-      ...(config.build.functions && { functions: config.build.functions }),
+      ...(config.functionsDirectory && { functions: config.functionsDirectory }),
       ...(config.build.publish && { publish: config.build.publish }),
       ...config.dev,
       ...flags,
     }
 
-    const { addonsUrls, teamEnv, addonsEnv, siteEnv, dotFilesEnv, siteUrl, capabilities } = await getSiteInformation({
+    if (flags.trafficMesh) {
+      warn(
+        '--trafficMesh and -t are deprecated and will be removed in the near future. Please use --edgeHandlers or -e instead.',
+      )
+    }
+
+    await injectEnvVariables({ env: this.netlify.cachedConfig.env, log, site, warn })
+
+    const { addonsUrls, siteUrl, capabilities } = await getSiteInformation({
       flags,
       api,
       site,
@@ -188,8 +239,6 @@ class DevCommand extends Command {
       error: errorExit,
       siteInfo,
     })
-
-    await addEnvVariables({ log, teamEnv, addonsEnv, siteEnv, dotFilesEnv })
 
     let settings = {}
     try {
@@ -268,10 +317,15 @@ DevCommand.flags = {
     char: 'l',
     description: 'start a public live session',
   }),
+  edgeHandlers: flagsLib.boolean({
+    char: 'e',
+    hidden: true,
+    description: 'activates the Edge Handlers runtime',
+  }),
   trafficMesh: flagsLib.boolean({
     char: 't',
     hidden: true,
-    description: 'uses Traffic Mesh for proxying requests',
+    description: '(DEPRECATED: use --edgeHandlers or -e instead) uses Traffic Mesh for proxying requests',
   }),
   locationDb: flagsLib.string({
     description: 'specify the path to a local GeoIP location database in MMDB format',

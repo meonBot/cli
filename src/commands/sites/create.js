@@ -1,15 +1,18 @@
 const { flags: flagsLib } = require('@oclif/command')
+const slugify = require('@sindresorhus/slugify')
 const chalk = require('chalk')
 const inquirer = require('inquirer')
 const pick = require('lodash/pick')
 const sample = require('lodash/sample')
-const parseGitRemote = require('parse-github-url')
 const prettyjson = require('prettyjson')
+const { v4: uuidv4 } = require('uuid')
 
 const Command = require('../../utils/command')
-const configGithub = require('../../utils/init/config-github')
-const configManual = require('../../utils/init/config-manual')
+const { getRepoData } = require('../../utils/get-repo-data')
+const { configureRepo } = require('../../utils/init/config')
 const { track } = require('../../utils/telemetry')
+
+const SITE_NAME_SUGGESTION_SUFFIX_LENGTH = 5
 
 class SitesCreateCommand extends Command {
   async run() {
@@ -44,21 +47,31 @@ class SitesCreateCommand extends Command {
     }
 
     const { name: nameFlag } = flags
-    let userName
+    let user
     let site
 
     // Allow the user to reenter site name if selected one isn't available
     const inputSiteName = async (name) => {
-      if (!userName) userName = await api.getCurrentUser()
+      if (!user) user = await api.getCurrentUser()
 
       if (!name) {
+        let { slug } = user
+        let suffix = ''
+
+        // If the user doesn't have a slug, we'll compute one. Because `full_name` is not guaranteed to be unique, we
+        // append a short randomly-generated ID to reduce the likelihood of a conflict.
+        if (!slug) {
+          slug = slugify(user.full_name || user.email)
+          suffix = `-${uuidv4().slice(0, SITE_NAME_SUGGESTION_SUFFIX_LENGTH)}`
+        }
+
         const suggestions = [
-          `super-cool-site-by-${userName.slug}`,
-          `the-awesome-${userName.slug}-site`,
-          `${userName.slug}-makes-great-sites`,
-          `netlify-thinks-${userName.slug}-is-great`,
-          `the-great-${userName.slug}-site`,
-          `isnt-${userName.slug}-awesome`,
+          `super-cool-site-by-${slug}${suffix}`,
+          `the-awesome-${slug}-site${suffix}`,
+          `${slug}-makes-great-sites${suffix}`,
+          `netlify-thinks-${slug}-is-great${suffix}`,
+          `the-great-${slug}-site${suffix}`,
+          `isnt-${slug}-awesome${suffix}`,
         ]
         const siteSuggestion = sample(suggestions)
 
@@ -118,47 +131,8 @@ class SitesCreateCommand extends Command {
 
     if (flags['with-ci']) {
       this.log('Configuring CI')
-      const { url } = await inquirer.prompt([
-        {
-          type: 'input',
-          name: 'url',
-          message: 'Git SSH remote URL to enable CI with:',
-          validate: (input) => (parseGitRemote(input) ? true : `Could not parse Git remote ${input}`),
-        },
-      ])
-      console.log(url)
-      const repoData = parseGitRemote(url)
-      const repo = {
-        repoData,
-        repo_path: url,
-      }
-
-      switch (true) {
-        case flags.manual: {
-          await configManual(this, site, repo)
-          break
-        }
-        case repoData.host === 'github.com': {
-          try {
-            await configGithub(this, site, repo)
-          } catch (error) {
-            this.warn(`Github error: ${error.status}`)
-            if (error.status === 404) {
-              this.error(
-                `Does the repository ${repo.repo_path} exist and do you have the correct permissions to set up deploy keys?`,
-              )
-            } else {
-              throw error
-            }
-          }
-          break
-        }
-        default: {
-          this.log('No configurator found for the provided git remote. Configuring manually...')
-          await configManual(this, site, repo)
-          break
-        }
-      }
+      const repoData = await getRepoData({ log: this.log })
+      await configureRepo({ context: this, siteId: site.id, repoData, manual: flags.manual })
     }
 
     if (flags.json) {

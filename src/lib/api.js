@@ -1,11 +1,9 @@
 const fetch = require('node-fetch')
 
-const getHeaders = ({ token }) => {
-  return {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${token}`,
-  }
-}
+const getHeaders = ({ token }) => ({
+  'Content-Type': 'application/json',
+  Authorization: `Bearer ${token}`,
+})
 
 const getErrorMessage = async ({ response }) => {
   const contentType = response.headers.get('content-type')
@@ -25,9 +23,7 @@ const checkResponse = async ({ response }) => {
   }
 }
 
-const getApiUrl = ({ api }) => {
-  return `${api.scheme}://${api.host}${api.pathPrefix}`
-}
+const getApiUrl = ({ api }) => `${api.scheme}://${api.host}${api.pathPrefix}`
 
 const apiPost = async ({ api, path, data }) => {
   const apiUrl = getApiUrl({ api })
@@ -81,4 +77,17 @@ const cancelDeploy = async ({ api, deployId, warn }) => {
   }
 }
 
-module.exports = { uploadEdgeHandlers, cancelDeploy }
+const FIRST_PAGE = 1
+const MAX_PAGES = 10
+const MAX_PER_PAGE = 100
+const listSites = async ({ api, options }) => {
+  const { page = FIRST_PAGE, maxPages = MAX_PAGES, ...rest } = options
+  const sites = await api.listSites({ page, per_page: MAX_PER_PAGE, ...rest })
+  // TODO: use pagination headers when js-client returns them
+  if (sites.length === MAX_PER_PAGE && page + 1 <= maxPages) {
+    return [...sites, ...(await listSites({ api, options: { page: page + 1, maxPages, ...rest } }))]
+  }
+  return sites
+}
+
+module.exports = { uploadEdgeHandlers, cancelDeploy, listSites }

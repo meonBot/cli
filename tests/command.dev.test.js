@@ -4,21 +4,35 @@ const http = require('http')
 const path = require('path')
 const process = require('process')
 
-const test = require('ava')
+// eslint-disable-next-line ava/use-test
+const avaTest = require('ava')
 const dotProp = require('dot-prop')
 const FormData = require('form-data')
 const jwt = require('jsonwebtoken')
-const fetch = require('node-fetch')
 
 const { withDevServer } = require('./utils/dev-server')
 const { startExternalServer } = require('./utils/external-server')
+const got = require('./utils/got')
 const { withSiteBuilder } = require('./utils/site-builder')
+
+const gotCatch404 = async (url, options) => {
+  try {
+    return await got(url, options)
+  } catch (error) {
+    if (error.response && error.response.statusCode === 404) {
+      return error.response
+    }
+    throw error
+  }
+}
+
+const test = process.env.CI === 'true' ? avaTest.serial.bind(avaTest) : avaTest
 
 const testMatrix = [
   { args: [] },
 
   // some tests are still failing with this enabled
-  // { args: ['--trafficMesh'] }
+  // { args: ['--edgeHandlers'] }
 ]
 
 const testName = (title, args) => (args.length <= 0 ? title : `${title} - ${args.join(' ')}`)
@@ -33,15 +47,14 @@ const getToken = ({ roles, jwtSecret = 'secret', jwtRolePath = 'app_metadata.aut
 }
 
 const setupRoleBasedRedirectsSite = (builder) => {
-  const publicDir = 'public'
   builder
     .withContentFiles([
       {
-        path: path.join(publicDir, 'index.html'),
+        path: 'index.html',
         content: '<html>index</html>',
       },
       {
-        path: path.join(publicDir, 'admin/foo.html'),
+        path: 'admin/foo.html',
         content: '<html>foo</html>',
       },
     ])
@@ -52,26 +65,29 @@ const setupRoleBasedRedirectsSite = (builder) => {
 }
 
 const validateRoleBasedRedirectsSite = async ({ builder, args, t, jwtSecret, jwtRolePath }) => {
+  const adminToken = getToken({ jwtSecret, jwtRolePath, roles: ['admin'] })
+  const editorToken = getToken({ jwtSecret, jwtRolePath, roles: ['editor'] })
+
   await withDevServer({ cwd: builder.directory, args }, async (server) => {
-    const unauthenticatedResponse = await fetch(`${server.url}/admin`)
-    t.is(unauthenticatedResponse.status, 404)
-    t.is(await unauthenticatedResponse.text(), 'Not Found')
+    const unauthenticatedResponse = await gotCatch404(`${server.url}/admin`)
+    t.is(unauthenticatedResponse.statusCode, 404)
+    t.is(unauthenticatedResponse.body, 'Not Found')
 
-    const authenticatedResponse = await fetch(`${server.url}/admin/foo`, {
+    const authenticatedResponse = await got(`${server.url}/admin/foo`, {
       headers: {
-        cookie: `nf_jwt=${getToken({ jwtSecret, jwtRolePath, roles: ['admin'] })}`,
+        cookie: `nf_jwt=${adminToken}`,
       },
     })
-    t.is(authenticatedResponse.status, 200)
-    t.is(await authenticatedResponse.text(), 'Not Found')
+    t.is(authenticatedResponse.statusCode, 200)
+    t.is(authenticatedResponse.body, '<html>foo</html>')
 
-    const wrongRoleResponse = await fetch(`${server.url}/admin/foo`, {
+    const wrongRoleResponse = await gotCatch404(`${server.url}/admin/foo`, {
       headers: {
-        cookie: `nf_jwt=${getToken({ jwtSecret, jwtRolePath, roles: ['editor'] })}`,
+        cookie: `nf_jwt=${editorToken}`,
       },
     })
-    t.is(wrongRoleResponse.status, 404)
-    t.is(await wrongRoleResponse.text(), 'Not Found')
+    t.is(wrongRoleResponse.statusCode, 404)
+    t.is(wrongRoleResponse.body, 'Not Found')
   })
 }
 
@@ -86,15 +102,55 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(server.url).then((res) => res.text())
+        const response = await got(server.url).text()
         t.is(response, '<h1>⊂◉‿◉つ</h1>')
+      })
+    })
+  })
+
+  test(testName('should return user defined headers when / is accessed', args), async (t) => {
+    await withSiteBuilder('site-with-headers-on-root', async (builder) => {
+      builder.withContentFile({
+        path: 'index.html',
+        content: '<h1>⊂◉‿◉つ</h1>',
+      })
+
+      const headerName = 'X-Frame-Options'
+      const headerValue = 'SAMEORIGIN'
+      builder.withHeadersFile({ headers: [{ path: '/*', headers: [`${headerName}: ${headerValue}`] }] })
+
+      await builder.buildAsync()
+
+      await withDevServer({ cwd: builder.directory, args }, async (server) => {
+        const { headers } = await got(server.url)
+        t.is(headers[headerName.toLowerCase()], headerValue)
+      })
+    })
+  })
+
+  test(testName('should return user defined headers when non-root path is accessed', args), async (t) => {
+    await withSiteBuilder('site-with-headers-on-non-root', async (builder) => {
+      builder.withContentFile({
+        path: 'foo/index.html',
+        content: '<h1>⊂◉‿◉つ</h1>',
+      })
+
+      const headerName = 'X-Frame-Options'
+      const headerValue = 'SAMEORIGIN'
+      builder.withHeadersFile({ headers: [{ path: '/*', headers: [`${headerName}: ${headerValue}`] }] })
+
+      await builder.buildAsync()
+
+      await withDevServer({ cwd: builder.directory, args }, async (server) => {
+        const { headers } = await got(`${server.url}/foo`)
+        t.is(headers[headerName.toLowerCase()], headerValue)
       })
     })
   })
 
   test(testName('should return response from a function with setTimeout', args), async (t) => {
     await withSiteBuilder('site-with-set-timeout-function', async (builder) => {
-      builder.withNetlifyToml({ config: { build: { functions: 'functions' } } }).withFunction({
+      builder.withNetlifyToml({ config: { functions: { directory: 'functions' } } }).withFunction({
         path: 'timeout.js',
         handler: async () => {
           console.log('ding')
@@ -113,7 +169,7 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/.netlify/functions/timeout`).then((res) => res.text())
+        const response = await got(`${server.url}/.netlify/functions/timeout`).text()
         t.is(response, 'ping')
       })
     })
@@ -121,20 +177,18 @@ testMatrix.forEach(({ args }) => {
 
   test(testName('should serve function from a subdirectory', args), async (t) => {
     await withSiteBuilder('site-with-from-subdirectory', async (builder) => {
-      builder.withNetlifyToml({ config: { build: { functions: 'functions' } } }).withFunction({
+      builder.withNetlifyToml({ config: { functions: { directory: 'functions' } } }).withFunction({
         path: path.join('echo', 'echo.js'),
-        handler: async () => {
-          return {
-            statusCode: 200,
-            body: 'ping',
-          }
-        },
+        handler: async () => ({
+          statusCode: 200,
+          body: 'ping',
+        }),
       })
 
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/.netlify/functions/echo`).then((res) => res.text())
+        const response = await got(`${server.url}/.netlify/functions/echo`).text()
         t.is(response, 'ping')
       })
     })
@@ -143,22 +197,20 @@ testMatrix.forEach(({ args }) => {
   test(testName('should pass .env.development vars to function', args), async (t) => {
     await withSiteBuilder('site-with-env-development', async (builder) => {
       builder
-        .withNetlifyToml({ config: { build: { functions: 'functions' } } })
+        .withNetlifyToml({ config: { functions: { directory: 'functions' } } })
         .withEnvFile({ path: '.env.development', env: { TEST: 'FROM_DEV_FILE' } })
         .withFunction({
           path: 'env.js',
-          handler: async () => {
-            return {
-              statusCode: 200,
-              body: `${process.env.TEST}`,
-            }
-          },
+          handler: async () => ({
+            statusCode: 200,
+            body: `${process.env.TEST}`,
+          }),
         })
 
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/.netlify/functions/env`).then((res) => res.text())
+        const response = await got(`${server.url}/.netlify/functions/env`).text()
         t.is(response, 'FROM_DEV_FILE')
       })
     })
@@ -166,21 +218,96 @@ testMatrix.forEach(({ args }) => {
 
   test(testName('should pass process env vars to function', args), async (t) => {
     await withSiteBuilder('site-with-process-env', async (builder) => {
-      builder.withNetlifyToml({ config: { build: { functions: 'functions' } } }).withFunction({
+      builder.withNetlifyToml({ config: { functions: { directory: 'functions' } } }).withFunction({
         path: 'env.js',
-        handler: async () => {
-          return {
-            statusCode: 200,
-            body: `${process.env.TEST}`,
-          }
-        },
+        handler: async () => ({
+          statusCode: 200,
+          body: `${process.env.TEST}`,
+        }),
       })
 
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, env: { TEST: 'FROM_PROCESS_ENV' }, args }, async (server) => {
-        const response = await fetch(`${server.url}/.netlify/functions/env`).then((res) => res.text())
+        const response = await got(`${server.url}/.netlify/functions/env`).text()
         t.is(response, 'FROM_PROCESS_ENV')
+      })
+    })
+  })
+
+  test(testName('should pass [build.environment] env vars to function', args), async (t) => {
+    await withSiteBuilder('site-with-build-environment', async (builder) => {
+      builder
+        .withNetlifyToml({
+          config: { build: { environment: { TEST: 'FROM_CONFIG_FILE' } }, functions: { directory: 'functions' } },
+        })
+        .withFunction({
+          path: 'env.js',
+          handler: async () => ({
+            statusCode: 200,
+            body: `${process.env.TEST}`,
+          }),
+        })
+
+      await builder.buildAsync()
+
+      await withDevServer({ cwd: builder.directory, args }, async (server) => {
+        const response = await got(`${server.url}/.netlify/functions/env`).text()
+        t.is(response, 'FROM_CONFIG_FILE')
+      })
+    })
+  })
+
+  test(testName('[context.dev.environment] should override [build.environment]', args), async (t) => {
+    await withSiteBuilder('site-with-build-environment', async (builder) => {
+      builder
+        .withNetlifyToml({
+          config: {
+            build: { environment: { TEST: 'DEFAULT_CONTEXT' } },
+            context: { dev: { environment: { TEST: 'DEV_CONTEXT' } } },
+            functions: { directory: 'functions' },
+          },
+        })
+        .withFunction({
+          path: 'env.js',
+          handler: async () => ({
+            statusCode: 200,
+            body: `${process.env.TEST}`,
+          }),
+        })
+
+      await builder.buildAsync()
+
+      await withDevServer({ cwd: builder.directory, args }, async (server) => {
+        const response = await got(`${server.url}/.netlify/functions/env`).text()
+        t.is(response, 'DEV_CONTEXT')
+      })
+    })
+  })
+
+  test(testName('should use [build.environment] and not [context.production.environment]', args), async (t) => {
+    await withSiteBuilder('site-with-build-environment', async (builder) => {
+      builder
+        .withNetlifyToml({
+          config: {
+            build: { environment: { TEST: 'DEFAULT_CONTEXT' } },
+            context: { production: { environment: { TEST: 'PRODUCTION_CONTEXT' } } },
+            functions: { directory: 'functions' },
+          },
+        })
+        .withFunction({
+          path: 'env.js',
+          handler: async () => ({
+            statusCode: 200,
+            body: `${process.env.TEST}`,
+          }),
+        })
+
+      await builder.buildAsync()
+
+      await withDevServer({ cwd: builder.directory, args }, async (server) => {
+        const response = await got(`${server.url}/.netlify/functions/env`).text()
+        t.is(response, 'DEFAULT_CONTEXT')
       })
     })
   })
@@ -188,23 +315,85 @@ testMatrix.forEach(({ args }) => {
   test(testName('should override .env.development with process env', args), async (t) => {
     await withSiteBuilder('site-with-override', async (builder) => {
       builder
-        .withNetlifyToml({ config: { build: { functions: 'functions' } } })
+        .withNetlifyToml({ config: { functions: { directory: 'functions' } } })
         .withEnvFile({ path: '.env.development', env: { TEST: 'FROM_DEV_FILE' } })
         .withFunction({
           path: 'env.js',
-          handler: async () => {
-            return {
-              statusCode: 200,
-              body: `${process.env.TEST}`,
-            }
-          },
+          handler: async () => ({
+            statusCode: 200,
+            body: `${process.env.TEST}`,
+          }),
         })
 
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, env: { TEST: 'FROM_PROCESS_ENV' }, args }, async (server) => {
-        const response = await fetch(`${server.url}/.netlify/functions/env`).then((res) => res.text())
+        const response = await got(`${server.url}/.netlify/functions/env`).text()
         t.is(response, 'FROM_PROCESS_ENV')
+      })
+    })
+  })
+
+  test(testName('should override [build.environment] with process env', args), async (t) => {
+    await withSiteBuilder('site-with-build-environment-override', async (builder) => {
+      builder
+        .withNetlifyToml({
+          config: { build: { environment: { TEST: 'FROM_CONFIG_FILE' } }, functions: { directory: 'functions' } },
+        })
+        .withFunction({
+          path: 'env.js',
+          handler: async () => ({
+            statusCode: 200,
+            body: `${process.env.TEST}`,
+          }),
+        })
+
+      await builder.buildAsync()
+
+      await withDevServer({ cwd: builder.directory, env: { TEST: 'FROM_PROCESS_ENV' }, args }, async (server) => {
+        const response = await got(`${server.url}/.netlify/functions/env`).text()
+        t.is(response, 'FROM_PROCESS_ENV')
+      })
+    })
+  })
+
+  test(testName('should override value of the NETLIFY_DEV env variable', args), async (t) => {
+    await withSiteBuilder('site-with-netlify-dev-override', async (builder) => {
+      builder.withNetlifyToml({ config: { functions: { directory: 'functions' } } }).withFunction({
+        path: 'env.js',
+        handler: async () => ({
+          statusCode: 200,
+          body: `${process.env.NETLIFY_DEV}`,
+        }),
+      })
+
+      await builder.buildAsync()
+
+      await withDevServer(
+        { cwd: builder.directory, env: { NETLIFY_DEV: 'FROM_PROCESS_ENV' }, args },
+        async (server) => {
+          const response = await got(`${server.url}/.netlify/functions/env`).text()
+          t.is(response, 'true')
+        },
+      )
+    })
+  })
+
+  test(testName('should set value of the CONTEXT env variable', args), async (t) => {
+    await withSiteBuilder('site-with-context-override', async (builder) => {
+      builder.withNetlifyToml({ config: { functions: { directory: 'functions' } } }).withFunction({
+        path: 'env.js',
+        handler: async () => ({
+          statusCode: 200,
+          body: `${process.env.CONTEXT}`,
+        }),
+      })
+
+      await builder.buildAsync()
+
+      await withDevServer({ cwd: builder.directory, args }, async (server) => {
+        const response = await got(`${server.url}/.netlify/functions/env`).text()
+        t.is(response, 'dev')
       })
     })
   })
@@ -214,24 +403,22 @@ testMatrix.forEach(({ args }) => {
       builder
         .withNetlifyToml({
           config: {
-            build: { functions: 'functions' },
+            functions: { directory: 'functions' },
             redirects: [{ from: '/api/*', to: '/.netlify/functions/:splat', status: 200 }],
           },
         })
         .withFunction({
           path: 'ping.js',
-          handler: async () => {
-            return {
-              statusCode: 200,
-              body: 'ping',
-            }
-          },
+          handler: async () => ({
+            statusCode: 200,
+            body: 'ping',
+          }),
         })
 
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/api/ping`).then((res) => res.text())
+        const response = await got(`${server.url}/api/ping`).text()
         t.is(response, 'ping')
       })
     })
@@ -242,34 +429,24 @@ testMatrix.forEach(({ args }) => {
       builder
         .withNetlifyToml({
           config: {
-            build: { functions: 'functions' },
+            functions: { directory: 'functions' },
             redirects: [{ from: '/api/*', to: '/.netlify/functions/:splat', status: 200 }],
           },
         })
         .withFunction({
           path: 'echo.js',
-          handler: async (event) => {
-            return {
-              statusCode: 200,
-              body: JSON.stringify(event),
-            }
-          },
+          handler: async (event) => ({
+            statusCode: 200,
+            body: JSON.stringify(event),
+          }),
         })
 
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/api/echo?ding=dong`).then((res) => res.json())
+        const response = await got(`${server.url}/api/echo?ding=dong`).json()
         t.is(response.body, undefined)
-        t.deepEqual(response.headers, {
-          accept: '*/*',
-          'accept-encoding': 'gzip,deflate',
-          'client-ip': '127.0.0.1',
-          connection: 'close',
-          host: `${server.host}:${server.port}`,
-          'user-agent': 'node-fetch/1.0 (+https://github.com/bitinn/node-fetch)',
-          'x-forwarded-for': '::ffff:127.0.0.1',
-        })
+        t.is(response.headers.host, `${server.host}:${server.port}`)
         t.is(response.httpMethod, 'GET')
         t.is(response.isBase64Encoded, false)
         t.is(response.path, '/api/echo')
@@ -283,40 +460,34 @@ testMatrix.forEach(({ args }) => {
       builder
         .withNetlifyToml({
           config: {
-            build: { functions: 'functions' },
+            functions: { directory: 'functions' },
             redirects: [{ from: '/api/*', to: '/.netlify/functions/:splat', status: 200 }],
           },
         })
         .withFunction({
           path: 'echo.js',
-          handler: async (event) => {
-            return {
-              statusCode: 200,
-              body: JSON.stringify(event),
-            }
-          },
+          handler: async (event) => ({
+            statusCode: 200,
+            body: JSON.stringify(event),
+          }),
         })
 
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/api/echo?ding=dong`, {
-          method: 'POST',
-          body: 'some=thing',
-        }).then((res) => res.json())
+        const response = await got
+          .post(`${server.url}/api/echo?ding=dong`, {
+            headers: {
+              'content-type': 'application/x-www-form-urlencoded',
+            },
+            body: 'some=thing',
+          })
+          .json()
 
         t.is(response.body, 'some=thing')
-        t.deepEqual(response.headers, {
-          accept: '*/*',
-          'accept-encoding': 'gzip,deflate',
-          'client-ip': '127.0.0.1',
-          connection: 'close',
-          host: `${server.host}:${server.port}`,
-          'content-type': 'text/plain;charset=UTF-8',
-          'content-length': '10',
-          'user-agent': 'node-fetch/1.0 (+https://github.com/bitinn/node-fetch)',
-          'x-forwarded-for': '::ffff:127.0.0.1',
-        })
+        t.is(response.headers.host, `${server.host}:${server.port}`)
+        t.is(response.headers['content-type'], 'application/x-www-form-urlencoded')
+        t.is(response.headers['content-length'], '10')
         t.is(response.httpMethod, 'POST')
         t.is(response.isBase64Encoded, false)
         t.is(response.path, '/api/echo')
@@ -330,29 +501,29 @@ testMatrix.forEach(({ args }) => {
       builder
         .withNetlifyToml({
           config: {
-            build: { functions: 'functions' },
+            functions: { directory: 'functions' },
             redirects: [{ from: '/api/*', to: '/.netlify/functions/:splat', status: 200 }],
           },
         })
         .withFunction({
           path: 'echo.js',
-          handler: async () => {
-            return {
-              statusCode: 200,
-            }
-          },
+          handler: async () => ({
+            statusCode: 200,
+          }),
         })
 
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/api/echo?ding=dong`, {
-          method: 'POST',
+        const response = await got.post(`${server.url}/api/echo?ding=dong`, {
+          headers: {
+            'content-type': 'application/x-www-form-urlencoded',
+          },
           body: 'some=thing',
         })
 
-        t.is(await response.text(), '')
-        t.is(response.status, 200)
+        t.is(response.body, '')
+        t.is(response.statusCode, 200)
       })
     })
   })
@@ -362,18 +533,16 @@ testMatrix.forEach(({ args }) => {
       builder
         .withNetlifyToml({
           config: {
-            build: { functions: 'functions' },
+            functions: { directory: 'functions' },
             redirects: [{ from: '/api/*', to: '/.netlify/functions/:splat', status: 200 }],
           },
         })
         .withFunction({
           path: 'echo.js',
-          handler: async (event) => {
-            return {
-              statusCode: 200,
-              body: JSON.stringify(event),
-            }
-          },
+          handler: async (event) => ({
+            statusCode: 200,
+            body: JSON.stringify(event),
+          }),
         })
 
       await builder.buildAsync()
@@ -382,39 +551,32 @@ testMatrix.forEach(({ args }) => {
         const form = new FormData()
         form.append('some', 'thing')
 
-        const response = await fetch(`${server.url}/api/echo?ding=dong`, {
-          method: 'POST',
-          body: form.getBuffer(),
-          headers: form.getHeaders(),
-        }).then((res) => res.json())
+        const expectedBoundary = form.getBoundary()
+        const expectedResponseBody = form.getBuffer().toString()
 
-        const formBoundary = form.getBoundary()
+        const response = await got
+          .post(`${server.url}/api/echo?ding=dong`, {
+            body: form,
+          })
+          .json()
 
-        t.deepEqual(response.headers, {
-          accept: '*/*',
-          'accept-encoding': 'gzip,deflate',
-          'client-ip': '127.0.0.1',
-          connection: 'close',
-          host: `${server.host}:${server.port}`,
-          'content-length': form.getLengthSync().toString(),
-          'content-type': `multipart/form-data; boundary=${formBoundary}`,
-          'user-agent': 'node-fetch/1.0 (+https://github.com/bitinn/node-fetch)',
-          'x-forwarded-for': '::ffff:127.0.0.1',
-        })
+        t.is(response.headers.host, `${server.host}:${server.port}`)
+        t.is(response.headers['content-type'], `multipart/form-data; boundary=${expectedBoundary}`)
+        t.is(response.headers['content-length'], '164')
         t.is(response.httpMethod, 'POST')
         t.is(response.isBase64Encoded, false)
         t.is(response.path, '/api/echo')
         t.deepEqual(response.queryStringParameters, { ding: 'dong' })
-        t.is(response.body, form.getBuffer().toString())
+        t.is(response.body, expectedResponseBody)
       })
     })
   })
 
   test(testName('should return 404 when redirecting to a non existing function', args), async (t) => {
-    await withSiteBuilder('site-with-multi-part-function', async (builder) => {
+    await withSiteBuilder('site-with-missing-function', async (builder) => {
       builder.withNetlifyToml({
         config: {
-          build: { functions: 'functions' },
+          functions: { directory: 'functions' },
           redirects: [{ from: '/api/*', to: '/.netlify/functions/:splat', status: 200 }],
         },
       })
@@ -422,12 +584,13 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/api/none`, {
-          method: 'POST',
-          body: 'nothing',
-        })
+        const response = await got
+          .post(`${server.url}/api/none`, {
+            body: 'nothing',
+          })
+          .catch((error) => error.response)
 
-        t.is(response.status, 404)
+        t.is(response.statusCode, 404)
       })
     })
   })
@@ -437,28 +600,22 @@ testMatrix.forEach(({ args }) => {
       builder
         .withNetlifyToml({
           config: {
-            build: { functions: 'functions' },
+            functions: { directory: 'functions' },
           },
         })
         .withFunction({
           path: 'echo.js',
-          handler: async (event) => {
-            return {
-              statusCode: 200,
-              body: JSON.stringify(event),
-            }
-          },
+          handler: async (event) => ({
+            statusCode: 200,
+            body: JSON.stringify(event),
+          }),
         })
 
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response1 = await fetch(
-          `${server.url}/.netlify/functions/echo?category[SOMETHING][]=something`,
-        ).then((res) => res.json())
-        const response2 = await fetch(`${server.url}/.netlify/functions/echo?category=one&category=two`).then((res) =>
-          res.json(),
-        )
+        const response1 = await got(`${server.url}/.netlify/functions/echo?category[SOMETHING][]=something`).json()
+        const response2 = await got(`${server.url}/.netlify/functions/echo?category=one&category=two`).json()
 
         t.deepEqual(response1.queryStringParameters, { 'category[SOMETHING][]': 'something' })
         t.deepEqual(response2.queryStringParameters, { category: 'one, two' })
@@ -475,17 +632,15 @@ testMatrix.forEach(({ args }) => {
         })
         .withNetlifyToml({
           config: {
-            build: { functions: 'functions' },
+            functions: { directory: 'functions' },
           },
         })
         .withFunction({
           path: 'submission-created.js',
-          handler: async (event) => {
-            return {
-              statusCode: 200,
-              body: JSON.stringify(event),
-            }
-          },
+          handler: async (event) => ({
+            statusCode: 200,
+            body: JSON.stringify(event),
+          }),
         })
 
       await builder.buildAsync()
@@ -493,25 +648,17 @@ testMatrix.forEach(({ args }) => {
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
         const form = new FormData()
         form.append('some', 'thing')
-        const response = await fetch(`${server.url}/?ding=dong`, {
-          method: 'POST',
-          body: form.getBuffer(),
-          headers: form.getHeaders(),
-        }).then((res) => res.json())
+        const response = await got
+          .post(`${server.url}/?ding=dong`, {
+            body: form,
+          })
+          .json()
 
         const body = JSON.parse(response.body)
 
-        t.deepEqual(response.headers, {
-          accept: '*/*',
-          'accept-encoding': 'gzip,deflate',
-          'client-ip': '127.0.0.1',
-          connection: 'close',
-          host: `${server.host}:${server.port}`,
-          'content-length': '289',
-          'content-type': 'application/json',
-          'user-agent': 'node-fetch/1.0 (+https://github.com/bitinn/node-fetch)',
-          'x-forwarded-for': '::ffff:127.0.0.1',
-        })
+        t.is(response.headers.host, `${server.host}:${server.port}`)
+        t.is(response.headers['content-length'], '276')
+        t.is(response.headers['content-type'], 'application/json')
         t.is(response.httpMethod, 'POST')
         t.is(response.isBase64Encoded, false)
         t.is(response.path, '/')
@@ -522,7 +669,7 @@ testMatrix.forEach(({ args }) => {
             data: {
               ip: '::ffff:127.0.0.1',
               some: 'thing',
-              user_agent: 'node-fetch/1.0 (+https://github.com/bitinn/node-fetch)',
+              user_agent: 'got (https://github.com/sindresorhus/got)',
             },
             human_fields: {
               Some: 'thing',
@@ -550,30 +697,29 @@ testMatrix.forEach(({ args }) => {
         })
         .withNetlifyToml({
           config: {
-            build: { functions: 'functions' },
+            functions: { directory: 'functions' },
           },
         })
         .withFunction({
           path: 'submission-created.js',
-          handler: async (event) => {
-            return {
-              statusCode: 200,
-              body: JSON.stringify(event),
-            }
-          },
+          handler: async (event) => ({
+            statusCode: 200,
+            body: JSON.stringify(event),
+          }),
         })
 
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/?ding=dong`, {
-          method: 'POST',
-          body: 'Something',
-          headers: {
-            'content-type': 'text/plain',
-          },
-        }).then((res) => res.text())
-        t.is(response, 'Method Not Allowed')
+        const response = await got
+          .post(`${server.url}/?ding=dong`, {
+            body: 'Something',
+            headers: {
+              'content-type': 'text/plain',
+            },
+          })
+          .catch((error) => error.response)
+        t.is(response.body, 'Method Not Allowed')
       })
     })
   })
@@ -598,7 +744,7 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/foo?ping=pong`).then((res) => res.text())
+        const response = await got(`${server.url}/foo?ping=pong`).text()
         t.is(response, '<html><h1>foo')
       })
     })
@@ -624,7 +770,7 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/foo`).then((res) => res.text())
+        const response = await got(`${server.url}/foo`).text()
         t.is(response, '<html><h1>not-foo')
       })
     })
@@ -650,7 +796,7 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/foo.html`).then((res) => res.text())
+        const response = await got(`${server.url}/foo.html`).text()
         t.is(response, '<html><h1>foo')
       })
     })
@@ -676,7 +822,7 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/foo.html`).then((res) => res.text())
+        const response = await got(`${server.url}/foo.html`).text()
         t.is(response, '<html><h1>not-foo')
       })
     })
@@ -702,11 +848,11 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response1 = await fetch(`${server.url}/not-foo`).then((res) => res.text())
-        const response2 = await fetch(`${server.url}/not-foo/`).then((res) => res.text())
+        const response1 = await got(`${server.url}/not-foo`).text()
+        const response2 = await got(`${server.url}/not-foo/`).text()
 
         // TODO: check why this doesn't redirect
-        const response3 = await fetch(`${server.url}/not-foo/index.html`).then((res) => res.text())
+        const response3 = await got(`${server.url}/not-foo/index.html`).text()
 
         t.is(response1, '<html><h1>foo')
         t.is(response2, '<html><h1>foo')
@@ -725,8 +871,8 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/non-existent`).then((res) => res.text())
-        t.is(response, '<h1>404 - Page not found</h1>')
+        const response = await gotCatch404(`${server.url}/non-existent`)
+        t.is(response.body, '<h1>404 - Page not found</h1>')
       })
     })
   })
@@ -749,9 +895,9 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/non-existent`)
-        t.is(response.status, 404)
-        t.is(await response.text(), '<h1>404 - My Custom 404 Page</h1>')
+        const response = await gotCatch404(`${server.url}/non-existent`)
+        t.is(response.statusCode, 404)
+        t.is(response.body, '<h1>404 - My Custom 404 Page</h1>')
       })
     })
   })
@@ -772,9 +918,9 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/test-404`)
-        t.is(response.status, 404)
-        t.is(await response.text(), '<html><h1>foo')
+        const response = await gotCatch404(`${server.url}/test-404`)
+        t.is(response.statusCode, 404)
+        t.is(response.body, '<html><h1>foo')
       })
     })
   })
@@ -799,10 +945,10 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/test-404`)
+        const response = await got(`${server.url}/test-404`)
 
-        t.is(response.status, 200)
-        t.is(await response.text(), '<html><h1>This page actually exists')
+        t.is(response.statusCode, 200)
+        t.is(response.body, '<html><h1>This page actually exists')
       })
     })
   })
@@ -827,10 +973,10 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/test-404`)
+        const response = await gotCatch404(`${server.url}/test-404`)
 
-        t.is(response.status, 404)
-        t.is(await response.text(), '<html><h1>foo')
+        t.is(response.statusCode, 404)
+        t.is(response.body, '<html><h1>foo')
       })
     })
   })
@@ -855,10 +1001,10 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/test`)
+        const response = await got(`${server.url}/test`)
 
-        t.is(response.status, 200)
-        t.is(await response.text(), 'index')
+        t.is(response.statusCode, 200)
+        t.is(response.body, 'index')
       })
     })
   })
@@ -874,16 +1020,17 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const getResponse = await fetch(`${server.url}/api/ping`).then((res) => res.json())
+        const getResponse = await got(`${server.url}/api/ping`).json()
         t.deepEqual(getResponse, { body: {}, method: 'GET', url: '/ping' })
 
-        const postResponse = await fetch(`${server.url}/api/ping`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: 'param=value',
-        }).then((res) => res.json())
+        const postResponse = await got
+          .post(`${server.url}/api/ping`, {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: 'param=value',
+          })
+          .json()
         t.deepEqual(postResponse, { body: { param: 'value' }, method: 'POST', url: '/ping' })
       })
 
@@ -895,7 +1042,7 @@ testMatrix.forEach(({ args }) => {
     await withSiteBuilder('site-with-post-no-content-type', async (builder) => {
       builder.withNetlifyToml({
         config: {
-          build: { functions: 'functions' },
+          functions: { directory: 'functions' },
           redirects: [{ from: '/api/*', to: '/other/:splat', status: 200 }],
         },
       })
@@ -943,16 +1090,16 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/foo`)
+        const response = await got(`${server.url}/foo`)
 
-        t.is(response.status, 200)
-        t.is(await response.text(), '<html><h1>foo')
+        t.is(response.statusCode, 200)
+        t.is(response.body, '<html><h1>foo')
       })
     })
   })
 
   test(testName('should not shadow an existing file that has unsafe URL characters', args), async (t) => {
-    await withSiteBuilder('site-with-same-name-for-file-and-folder', async (builder) => {
+    await withSiteBuilder('site-with-unsafe-url-file-names', async (builder) => {
       builder
         .withContentFile({
           path: 'public/index.html',
@@ -977,8 +1124,8 @@ testMatrix.forEach(({ args }) => {
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
         const [spaces, brackets] = await Promise.all([
-          fetch(`${server.url}/files/file with spaces`).then((res) => res.text()),
-          fetch(`${server.url}/files/[file_with_brackets]`).then((res) => res.text()),
+          got(`${server.url}/files/file with spaces`).text(),
+          got(`${server.url}/files/[file_with_brackets]`).text(),
         ])
 
         t.is(spaces, '<html>file with spaces</html>')
@@ -1013,17 +1160,17 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/hello-world`)
+        const response = await got(`${server.url}/hello-world`)
 
-        t.is(response.status, 200)
-        t.is(await response.text(), '<html>hello</html>')
+        t.is(response.statusCode, 200)
+        t.is(response.body, '<html>hello</html>')
       })
     })
   })
 
   test(testName('should return 202 ok and empty response for background function', args), async (t) => {
     await withSiteBuilder('site-with-background-function', async (builder) => {
-      builder.withNetlifyToml({ config: { build: { functions: 'functions' } } }).withFunction({
+      builder.withNetlifyToml({ config: { functions: { directory: 'functions' } } }).withFunction({
         path: 'hello-background.js',
         handler: () => {
           console.log("Look at me I'm a background task")
@@ -1033,11 +1180,9 @@ testMatrix.forEach(({ args }) => {
       await builder.buildAsync()
 
       await withDevServer({ cwd: builder.directory, args }, async (server) => {
-        const response = await fetch(`${server.url}/.netlify/functions/hello-background`)
-        const text = await response.text()
-        const expectedStatueCode = 202
-        t.is(response.status, expectedStatueCode)
-        t.is(text, '')
+        const response = await got(`${server.url}/.netlify/functions/hello-background`)
+        t.is(response.statusCode, 202)
+        t.is(response.body, '')
       })
     })
   })
@@ -1071,7 +1216,61 @@ testMatrix.forEach(({ args }) => {
   const version = Number.parseInt(process.version.slice(1).split('.')[0])
   const EDGE_HANDLER_MIN_VERSION = 10
   if (version >= EDGE_HANDLER_MIN_VERSION) {
-    test(testName('should serve edge handlers', args), async (t) => {
+    test(testName('should serve edge handlers with --edgeHandlers flag', args), async (t) => {
+      await withSiteBuilder('site-with-fully-qualified-redirect-rule', async (builder) => {
+        const publicDir = 'public'
+        builder
+          .withNetlifyToml({
+            config: {
+              build: { publish: publicDir },
+              redirects: [
+                {
+                  from: '/edge-handler',
+                  to: 'index.html',
+                  status: 200,
+                  edge_handler: 'smoke',
+                  force: true,
+                },
+              ],
+            },
+          })
+          .withContentFiles([
+            {
+              path: path.join(publicDir, 'index.html'),
+              content: '<html>index</html>',
+            },
+          ])
+          .withEdgeHandlers({
+            fileName: 'smoke.js',
+            handlers: {
+              onRequest: (event) => {
+                event.replaceResponse(
+                  // eslint-disable-next-line no-undef
+                  new Response(null, {
+                    headers: {
+                      Location: 'https://google.com/',
+                    },
+                    status: 301,
+                  }),
+                )
+              },
+            },
+          })
+
+        await builder.buildAsync()
+
+        await withDevServer({ cwd: builder.directory, args: [...args, '--edgeHandlers'] }, async (server) => {
+          const response = await got(`${server.url}/edge-handler`, {
+            followRedirect: false,
+          })
+
+          t.is(response.statusCode, 301)
+          t.is(response.headers.location, 'https://google.com/')
+        })
+      })
+    })
+
+    test(testName('should serve edge handlers with deprecated --trafficMesh flag', args), async (t) => {
       await withSiteBuilder('site-with-fully-qualified-redirect-rule', async (builder) => {
         const publicDir = 'public'
         builder
@@ -1115,12 +1314,12 @@ testMatrix.forEach(({ args }) => {
         await builder.buildAsync()
 
         await withDevServer({ cwd: builder.directory, args: [...args, '--trafficMesh'] }, async (server) => {
-          const response = await fetch(`${server.url}/edge-handler`, {
-            redirect: 'manual',
+          const response = await got(`${server.url}/edge-handler`, {
+            followRedirect: false,
           })
 
-          t.is(response.status, 301)
-          t.is(response.headers.get('location'), 'https://google.com/')
+          t.is(response.statusCode, 301)
+          t.is(response.headers.location, 'https://google.com/')
         })
       })
     })
@@ -1143,10 +1342,115 @@ testMatrix.forEach(({ args }) => {
 
         await builder.buildAsync()
 
-        await withDevServer({ cwd: builder.directory, args: [...args, '--trafficMesh'] }, async (server) => {
-          const response = await fetch(`${server.url}/index.html`)
+        await withDevServer({ cwd: builder.directory, args: [...args, '--edgeHandlers'] }, async (server) => {
+          const response = await got(`${server.url}/index.html`)
 
-          t.is(response.status, 200)
+          t.is(response.statusCode, 200)
+        })
+      })
+    })
+
+    test(testName('redirect with country cookie', args), async (t) => {
+      await withSiteBuilder('site-with-country-cookie', async (builder) => {
+        builder
+          .withContentFiles([
+            {
+              path: 'index.html',
+              content: '<html>index</html>',
+            },
+            {
+              path: 'index-es.html',
+              content: '<html>index in spanish</html>',
+            },
+          ])
+          .withRedirectsFile({
+            redirects: [{ from: `/`, to: `/index-es.html`, status: '200!', condition: 'Country=ES' }],
+          })
+
+        await builder.buildAsync()
+
+        await withDevServer({ cwd: builder.directory, args }, async (server) => {
+          const response = await got(`${server.url}/`, {
+            headers: {
+              cookie: `nf_country=ES`,
+            },
+          })
+          t.is(response.statusCode, 200)
+          t.is(response.body, '<html>index in spanish</html>')
+        })
+      })
+    })
+
+    test(testName(`doesn't hang when sending a application/json POST request to function server`, args), async (t) => {
+      await withSiteBuilder('site-with-functions', async (builder) => {
+        const functionsPort = 6666
+        await builder
+          .withNetlifyToml({ config: { functions: { directory: 'functions' }, dev: { functionsPort } } })
+          .buildAsync()
+
+        await withDevServer({ cwd: builder.directory, args }, async ({ url, port }) => {
+          const response = await gotCatch404(`${url.replace(port, functionsPort)}/test`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: '{}',
+          })
+          t.is(response.statusCode, 404)
+          t.is(response.body, 'Function not found...')
+        })
+      })
+    })
+
+    test(testName('should handle query params in redirects', args), async (t) => {
+      await withSiteBuilder('site-with-query-redirects', async (builder) => {
+        await builder
+          .withContentFile({
+            path: 'public/index.html',
+            content: 'home',
+          })
+          .withNetlifyToml({
+            config: {
+              build: { publish: 'public' },
+              functions: { directory: 'functions' },
+            },
+          })
+          .withRedirectsFile({
+            redirects: [
+              { from: `/api/*`, to: `/.netlify/functions/echo?a=1&a=2`, status: '200' },
+              { from: `/foo`, to: `/`, status: '302' },
+              { from: `/bar`, to: `/?a=1&a=2`, status: '302' },
+              { from: `/test id=:id`, to: `/?param=:id` },
+            ],
+          })
+          .withFunction({
+            path: 'echo.js',
+            handler: async (event) => ({
+              statusCode: 200,
+              body: JSON.stringify(event),
+            }),
+          })
+          .buildAsync()
+
+        await withDevServer({ cwd: builder.directory, args }, async (server) => {
+          const [fromFunction, queryPassthrough, queryInRedirect, withParamMatching] = await Promise.all([
+            got(`${server.url}/api/test?foo=1&foo=2&bar=1&bar=2`).json(),
+            got(`${server.url}/foo?foo=1&foo=2&bar=1&bar=2`, { followRedirect: false }),
+            got(`${server.url}/bar?foo=1&foo=2&bar=1&bar=2`, { followRedirect: false }),
+            got(`${server.url}/test?id=1`, { followRedirect: false }),
+          ])
+
+          // query params should be taken from the request
+          t.deepEqual(fromFunction.multiValueQueryStringParameters, { foo: ['1', '2'], bar: ['1', '2'] })
+
+          // query params should be passed through from the request
+          t.is(queryPassthrough.headers.location, '/?foo=1&foo=2&bar=1&bar=2')
+
+          // query params should be taken from the redirect rule
+          t.is(queryInRedirect.headers.location, '/?a=1&a=2')
+
+          // query params should be taken from the redirect rule
+          t.is(withParamMatching.headers.location, '/?param=1')
         })
       })
     })

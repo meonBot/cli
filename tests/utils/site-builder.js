@@ -2,15 +2,14 @@ const os = require('os')
 const path = require('path')
 const process = require('process')
 
+const execa = require('execa')
 const tempDirectory = require('temp-dir')
 const { toToml } = require('tomlify-j0.4')
 const { v4: uuidv4 } = require('uuid')
 
 const fs = require('../../src/lib/fs')
 
-const ensureDir = (file) => {
-  return fs.mkdirRecursiveAsync(file)
-}
+const ensureDir = (file) => fs.mkdirRecursiveAsync(file)
 
 const createSiteBuilder = ({ siteName }) => {
   const directory = path.join(
@@ -46,10 +45,10 @@ const createSiteBuilder = ({ siteName }) => {
       })
       return builder
     },
-    withPackageJson: ({ object, pathPrefix = '' }) => {
+    withPackageJson: ({ packageJson, pathPrefix = '' }) => {
       const dest = path.join(directory, pathPrefix, 'package.json')
       tasks.push(async () => {
-        const content = JSON.stringify(object, null, 2)
+        const content = JSON.stringify(packageJson, null, 2)
         await ensureDir(path.dirname(dest))
         await fs.writeFileAsync(dest, `${content}\n`)
       })
@@ -67,9 +66,7 @@ const createSiteBuilder = ({ siteName }) => {
       const dest = path.join(directory, 'edge-handlers', fileName)
       tasks.push(async () => {
         const content = Object.entries(handlers)
-          .map(([event, handler]) => {
-            return `export const ${event} = ${handler.toString()}`
-          })
+          .map(([event, handler]) => `export const ${event} = ${handler.toString()}`)
           .join(os.EOL)
         await ensureDir(path.dirname(dest))
         await fs.writeFileAsync(dest, content)
@@ -80,7 +77,7 @@ const createSiteBuilder = ({ siteName }) => {
       const dest = path.join(directory, pathPrefix, '_redirects')
       tasks.push(async () => {
         const content = redirects
-          .map(({ from, to, status, condition = '' }) => `${from} ${to} ${status} ${condition}`)
+          .map(({ from, to, status, condition = '' }) => [from, to, status, condition].filter(Boolean).join(' '))
           .join(os.EOL)
         await ensureDir(path.dirname(dest))
         await fs.writeFileAsync(dest, content)
@@ -123,6 +120,13 @@ const createSiteBuilder = ({ siteName }) => {
             .map(([key, value]) => `${key}=${value}`)
             .join(os.EOL),
         )
+      })
+      return builder
+    },
+    withGit: ({ repoUrl }) => {
+      tasks.push(async () => {
+        await execa('git', ['init', '--initial-branch', 'main'], { cwd: directory })
+        await execa('git', ['remote', 'add', 'origin', repoUrl], { cwd: directory })
       })
       return builder
     },

@@ -18,7 +18,7 @@ const scope = {
   // eslint-disable-next-line react/display-name, id-length
   a: ({ children, href }) => {
     // handle external links
-    if (!href.match(/^\//)) {
+    if (!href.startsWith('/')) {
       return (
         <Rebass.Link color="#00ad9f" href={href}>
           {children}
@@ -40,18 +40,21 @@ const navOrder = [
   'addons',
   'api',
   'build',
+  'completion',
   'deploy',
   'dev',
   'env',
   'functions',
   'init',
   'link',
+  'lm',
   'login',
   'logout',
   'open',
   'sites',
   'status',
   'unlink',
+  'watch',
   'netlify-dev',
   'contributing',
 ]
@@ -68,7 +71,7 @@ const sortRoutes = (routes) =>
   [
     ...sortBy([...routes], ({ name }) => {
       const index = navOrder.indexOf(name)
-      return index < 0 ? Infinity : index
+      return index < 0 ? Number.POSITIVE_INFINITY : index
     }),
   ].map((route) => {
     if (!pageNames[route.name]) {

@@ -5,11 +5,11 @@ const { URL, URLSearchParams } = require('url')
 
 const contentType = require('content-type')
 const cookie = require('cookie')
+const { get } = require('dot-prop')
 const httpProxy = require('http-proxy')
 const { createProxyMiddleware } = require('http-proxy-middleware')
 const jwtDecode = require('jwt-decode')
 const locatePath = require('locate-path')
-const get = require('lodash/get')
 const isEmpty = require('lodash/isEmpty')
 const pFilter = require('p-filter')
 const toReadableStream = require('to-readable-stream')
@@ -17,7 +17,7 @@ const toReadableStream = require('to-readable-stream')
 const { readFileAsync, fileExistsAsync, isFileAsync } = require('../lib/fs.js')
 
 const { createStreamPromise } = require('./create-stream-promise')
-const { parseHeadersFile, objectForPath } = require('./headers')
+const { parseHeadersFile, headersForPath } = require('./headers')
 const { NETLIFYDEVLOG, NETLIFYDEVWARN } = require('./logo')
 const { createRewriter } = require('./rules-proxy')
 const { onChanges } = require('./rules-proxy')
@@ -98,16 +98,11 @@ const alternativePathsFor = function (url) {
   if (url[url.length - 1] === '/') {
     const end = url.length - 1
     if (url !== '/') {
-      paths.push(`${url.slice(0, end)}.html`)
-      paths.push(`${url.slice(0, end)}.htm`)
+      paths.push(`${url.slice(0, end)}.html`, `${url.slice(0, end)}.htm`)
     }
-    paths.push(`${url}index.html`)
-    paths.push(`${url}index.htm`)
-  } else if (!url.match(assetExtensionRegExp)) {
-    paths.push(`${url}.html`)
-    paths.push(`${url}.htm`)
-    paths.push(`${url}/index.html`)
-    paths.push(`${url}/index.htm`)
+    paths.push(`${url}index.html`, `${url}index.htm`)
+  } else if (!assetExtensionRegExp.test(url)) {
+    paths.push(`${url}.html`, `${url}.htm`, `${url}/index.html`, `${url}/index.htm`)
   }
 
   return paths
@@ -157,7 +152,7 @@ const serveRedirect = async function ({ req, res, proxy, match, options }) {
         return
       }
 
-      if ((jwtValue.exp || 0) < Math.round(new Date().getTime() / MILLISEC_TO_SEC)) {
+      if ((jwtValue.exp || 0) < Math.round(Date.now() / MILLISEC_TO_SEC)) {
         console.warn(NETLIFYDEVWARN, 'Expired JWT provided in request', req.url)
       } else {
         const presentedRoles = get(jwtValue, options.jwtRolePath) || []
@@ -192,25 +187,31 @@ const serveRedirect = async function ({ req, res, proxy, match, options }) {
   }
 
   if (match.force || !staticFile || !options.framework || req.method === 'POST') {
+    // construct destination URL from redirect rule match
     const dest = new URL(match.to, `${reqUrl.protocol}//${reqUrl.host}`)
 
-    // Use query params of request URL as base, so that, destination query params can supersede
-    const urlParams = new URLSearchParams(reqUrl.searchParams)
-    dest.searchParams.forEach((val, key) => {
-      urlParams.set(key, val)
-    })
-    urlParams.forEach((val, key) => {
-      dest.searchParams.set(key, val)
-    })
+    // We pass through request params in one of the following cases:
+    // 1. The redirect rule doesn't have any query params
+    // 2. This is a function redirect https://github.com/netlify/cli/issues/1605
+    if (Array.from(dest.searchParams).length === 0 || isFunction(options.functionsPort, stripOrigin(dest))) {
+      dest.searchParams.forEach((_, key) => {
+        dest.searchParams.delete(key)
+      })
+
+      const requestParams = new URLSearchParams(reqUrl.searchParams)
+      requestParams.forEach((val, key) => {
+        dest.searchParams.append(key, val)
+      })
+    }
 
     const destURL = stripOrigin(dest)
 
     if (isRedirect(match)) {
       res.writeHead(match.status, {
-        Location: match.to,
+        Location: destURL,
         'Cache-Control': 'no-cache',
       })
-      res.end(`Redirecting to ${match.to}`)
+      res.end(`Redirecting to ${destURL}`)
       return
     }
 
@@ -291,7 +292,7 @@ const initializeProxy = function (port, distDir, projectDir) {
       }
     }
     const requestURL = new URL(req.url, `http://${req.headers.host || 'localhost'}`)
-    const pathHeaderRules = objectForPath(headerRules, requestURL.pathname)
+    const pathHeaderRules = headersForPath(headerRules, requestURL.pathname)
     if (!isEmpty(pathHeaderRules)) {
       Object.entries(pathHeaderRules).forEach(([key, val]) => {
         res.setHeader(key, val)

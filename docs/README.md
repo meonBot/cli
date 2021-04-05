@@ -91,6 +91,7 @@ Manage netlify functions
 | [`functions:build`](/docs/commands/functions.md#functionsbuild) | Build functions locally  |
 | [`functions:create`](/docs/commands/functions.md#functionscreate) | Create a new function locally  |
 | [`functions:invoke`](/docs/commands/functions.md#functionsinvoke) | Trigger a function while in netlify dev with simulated data, good for testing function calls including Netlify's Event Triggered Functions  |
+| [`functions:list`](/docs/commands/functions.md#functionslist) | List functions that exist locally  |
 
 
 ### [init](/docs/commands/init.md)
@@ -100,6 +101,17 @@ Configure continuous deployment for a new or existing site
 ### [link](/docs/commands/link.md)
 
 Link a local repo or project folder to an existing site on Netlify
+
+### [lm](/docs/commands/lm.md)
+
+Handle Netlify Large Media operations
+
+| Subcommand | description  |
+|:--------------------------- |:-----|
+| [`lm:info`](/docs/commands/lm.md#lminfo) | Show large media requirements information.  |
+| [`lm:install`](/docs/commands/lm.md#lminstall) | Configures your computer to use Netlify Large Media.  |
+| [`lm:setup`](/docs/commands/lm.md#lmsetup) | Configures your site to use Netlify Large Media.  |
+
 
 ### [login](/docs/commands/login.md)
 
@@ -146,6 +158,16 @@ Unlink a local folder from a Netlify site
 ### [watch](/docs/commands/watch.md)
 
 Watch for site deploy to finish
+
+### [completion](/docs/commands/completion.md)
+
+(Beta) Generate shell completion script
+
+| Subcommand | description  |
+|:--------------------------- |:-----|
+| [`completion:generate:alias`](/docs/commands/completion.md#completiongeneratealias) | Generates completion script for alias  |
+| [`completion:generate`](/docs/commands/completion.md#completiongenerate) | Generates completion script  |
+
 
 
 <!-- AUTO-GENERATED-CONTENT:END -->

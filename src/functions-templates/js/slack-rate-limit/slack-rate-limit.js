@@ -20,33 +20,29 @@ class IdentityAPI {
     }
   }
 
-  parseJsonResponse(response) {
-    return response.json().then((json) => {
-      if (!response.ok) {
-        const error = `JSON: ${JSON.stringify(json)}. Status: ${response.status}`
-        return Promise.reject(new Error(error))
-      }
-
-      return json
-    })
+  async parseJsonResponse(response) {
+    const json = await response.json()
+    if (!response.ok) {
+      const error = `JSON: ${JSON.stringify(json)}. Status: ${response.status}`
+      throw new Error(error)
+    }
+    return json
   }
 
-  request(path, options = {}) {
+  async request(path, options = {}) {
     const headers = this.headers(options.headers || {})
-    return fetch(this.apiURL + path, { ...options, headers }).then((response) => {
-      const contentType = response.headers.get('Content-Type')
-      if (contentType && contentType.match(/json/)) {
-        return this.parseJsonResponse(response)
-      }
+    const response = await fetch(this.apiURL + path, { ...options, headers })
+    const contentType = response.headers.get('Content-Type')
+    if (contentType && /json/.test(contentType)) {
+      return this.parseJsonResponse(response)
+    }
 
-      if (!response.ok) {
-        return response.text().then((data) => {
-          const error = `Data: ${data}. Status: ${response.status}`
-          return Promise.reject(new Error(error))
-        })
-      }
-      return response.text()
-    })
+    if (!response.ok) {
+      const data = await response.text()
+      const error = `Data: ${data}. Status: ${response.status}`
+      throw new Error(error)
+    }
+    return await response.text()
   }
 }
 
@@ -91,7 +87,7 @@ module.exports = async function handler(event, context) {
 
   const user = await fetchUser(context.clientContext.identity, claims.sub)
   const lastMessage = new Date(user.app_metadata.last_message_at || 0).getTime()
-  const cutOff = new Date().getTime() - MESSAGE_RATE_LIMIT
+  const cutOff = Date.now() - MESSAGE_RATE_LIMIT
   if (lastMessage > cutOff) {
     return {
       statusCode: 401,
@@ -110,7 +106,7 @@ module.exports = async function handler(event, context) {
       }),
     })
     await updateUser(context.clientContext.identity, user, {
-      last_message_at: new Date().getTime(),
+      last_message_at: Date.now(),
     })
     return { statusCode: 204 }
   } catch (error) {

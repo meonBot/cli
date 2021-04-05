@@ -4,9 +4,8 @@ const process = require('process')
 const { flags: flagsLib } = require('@oclif/command')
 const chalk = require('chalk')
 const cliSpinnerNames = Object.keys(require('cli-spinners'))
-const dotProp = require('dot-prop')
+const { get } = require('dot-prop')
 const inquirer = require('inquirer')
-const get = require('lodash/get')
 const isObject = require('lodash/isObject')
 const logSymbols = require('log-symbols')
 const ora = require('ora')
@@ -95,7 +94,7 @@ const validateDeployFolder = async ({ deployFolder, error }) => {
 const getFunctionsFolder = ({ flags, config, site, siteData }) => {
   let functionsFolder
   // Support "functions" and "Functions"
-  const funcConfig = get(config, 'build.functions') || get(config, 'build.Functions')
+  const funcConfig = config.functionsDirectory
   if (flags.functions) {
     functionsFolder = path.resolve(process.cwd(), flags.functions)
   } else if (funcConfig) {
@@ -193,9 +192,7 @@ const hasErrorMessage = (actual, expected) => {
   return false
 }
 
-const getJsonErrorMessage = (error) => {
-  return dotProp.get(error, 'json.message', '')
-}
+const getJsonErrorMessage = (error) => get(error, 'json.message', '')
 
 const reportDeployError = ({ error, warn, failAndExit }) => {
   switch (true) {
@@ -352,7 +349,6 @@ class DeployCommand extends Command {
       warn('--branch flag has been renamed to --alias and will be removed in future versions')
     }
 
-    const deployToProduction = flags.prod
     await this.authenticate(flags.auth)
 
     await this.config.runHook('analytics', {
@@ -408,14 +404,17 @@ class DeployCommand extends Command {
       }
     }
 
+    const deployToProduction = flags.prod || (flags.prodIfUnlocked && !siteData.published_deploy.locked)
+
     if (flags.trigger) {
       return triggerDeploy({ api, siteId, siteData, log, error })
     }
 
     if (flags.build) {
+      const [token] = await this.getConfigToken()
       const options = await getBuildOptions({
         context: this,
-        token: this.getConfigToken()[0],
+        token,
         flags,
       })
       const exitCode = await runBuild(options)
@@ -546,6 +545,7 @@ DeployCommand.examples = [
   'netlify deploy',
   'netlify deploy --prod',
   'netlify deploy --prod --open',
+  'netlify deploy --prodIfUnlocked',
   'netlify deploy --message "A message with an $ENV_VAR"',
   'netlify deploy --auth $NETLIFY_AUTH_TOKEN',
   'netlify deploy --trigger',
@@ -564,10 +564,16 @@ DeployCommand.flags = {
     char: 'p',
     description: 'Deploy to production',
     default: false,
-    exclusive: ['alias', 'branch'],
+    exclusive: ['alias', 'branch', 'prodIfUnlocked'],
+  }),
+  prodIfUnlocked: flagsLib.boolean({
+    description: 'Deploy to production if unlocked, create a draft otherwise',
+    default: false,
+    exclusive: ['alias', 'branch', 'prod'],
   }),
   alias: flagsLib.string({
-    description: "Specifies the alias for deployment. Useful for creating predictable deployment URL's",
+    description:
+      'Specifies the alias for deployment. Useful for creating predictable deployment URLs. Maximum 37 characters.',
   }),
   branch: flagsLib.string({
     char: 'b',

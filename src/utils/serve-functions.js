@@ -81,16 +81,14 @@ const createSynchronousFunctionCallback = function (response) {
   }
 }
 
-const createBackgroundFunctionCallback = (functionName) => {
-  return (err) => {
-    if (err) {
-      console.log(
-        `${NETLIFYDEVERR} Error during background function ${styleFunctionName(functionName)} execution:`,
-        formatLambdaError(err),
-      )
-    } else {
-      console.log(`${NETLIFYDEVLOG} Done executing background function ${styleFunctionName(functionName)}`)
-    }
+const createBackgroundFunctionCallback = (functionName) => (err) => {
+  if (err) {
+    console.log(
+      `${NETLIFYDEVERR} Error during background function ${styleFunctionName(functionName)} execution:`,
+      formatLambdaError(err),
+    )
+  } else {
+    console.log(`${NETLIFYDEVLOG} Done executing background function ${styleFunctionName(functionName)}`)
   }
 }
 
@@ -100,8 +98,8 @@ const DEFAULT_LAMBDA_OPTIONS = {
 
 // 10 seconds for synchronous functions
 const SYNCHRONOUS_FUNCTION_TIMEOUT = 1e4
-const executeSynchronousFunction = ({ event, lambdaPath, clientContext, response }) => {
-  return lambdaLocal.execute({
+const executeSynchronousFunction = ({ event, lambdaPath, clientContext, response }) =>
+  lambdaLocal.execute({
     ...DEFAULT_LAMBDA_OPTIONS,
     event,
     lambdaPath,
@@ -109,7 +107,6 @@ const executeSynchronousFunction = ({ event, lambdaPath, clientContext, response
     callback: createSynchronousFunctionCallback(response),
     timeoutMs: SYNCHRONOUS_FUNCTION_TIMEOUT,
   })
-}
 
 // 15 minuets for background functions
 const BACKGROUND_FUNCTION_TIMEOUT = 9e5
@@ -252,13 +249,15 @@ const createHandler = async function ({ dir, capabilities, warn }) {
   }
 }
 
-const createFormSubmissionHandler = function ({ siteUrl }) {
+const createFormSubmissionHandler = function ({ siteUrl, warn }) {
   return async function formSubmissionHandler(req, res, next) {
     if (req.url.startsWith('/.netlify/') || req.method !== 'POST') return next()
 
     const fakeRequest = new Readable({
       read() {
         this.push(req.body)
+        // TODO: remove when https://github.com/sindresorhus/eslint-plugin-unicorn/issues/1057 is fixed
+        // eslint-disable-next-line unicorn/no-array-push-push
         this.push(null)
       },
     })
@@ -308,10 +307,12 @@ const createFormSubmissionHandler = function ({ siteUrl }) {
           })
         })
       } catch (error) {
-        return console.error(error)
+        warn(error)
+        return next()
       }
     } else {
-      return console.error('Invalid Content-Type for Netlify Dev forms request')
+      warn('Invalid Content-Type for Netlify Dev forms request')
+      return next()
     }
     const data = JSON.stringify({
       payload: {
@@ -373,7 +374,7 @@ const getFunctionsServer = async function ({ dir, siteUrl, capabilities, warn })
     }),
   )
   app.use(bodyParser.raw({ limit: '6mb', type: '*/*' }))
-  app.use(createFormSubmissionHandler({ siteUrl }))
+  app.use(createFormSubmissionHandler({ siteUrl, warn }))
   app.use(
     expressLogging(console, {
       blacklist: ['/favicon.ico'],
@@ -389,8 +390,8 @@ const getFunctionsServer = async function ({ dir, siteUrl, capabilities, warn })
   return app
 }
 
-const getBuildFunction = ({ functionBuilder, log }) => {
-  return async function build() {
+const getBuildFunction = ({ functionBuilder, log }) =>
+  async function build() {
     log(
       `${NETLIFYDEVLOG} Function builder ${chalk.yellow(functionBuilder.builderName)} ${chalk.magenta(
         'building',
@@ -415,7 +416,6 @@ const getBuildFunction = ({ functionBuilder, log }) => {
       )
     }
   }
-}
 
 const setupFunctionsBuilder = async ({ site, log, warn }) => {
   const functionBuilder = await detectFunctionsBuilder(site.root)

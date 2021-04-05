@@ -8,7 +8,11 @@ const pathType = require('path-type')
 const statAsync = promisify(fs.stat)
 const readFileAsync = promisify(fs.readFile)
 const writeFileAsync = promisify(fs.writeFile)
+const rmFileAsync = promisify(fs.unlink)
+const copyFileAsync = promisify(fs.copyFile)
 const accessAsync = promisify(fs.access)
+const mkdtempAsync = promisify(fs.mkdtemp)
+const appendFileAsync = promisify(fs.appendFile)
 
 const readFileAsyncCatchError = async (filepath) => {
   try {
@@ -39,9 +43,13 @@ module.exports = {
   readFileAsync,
   readFileAsyncCatchError,
   writeFileAsync,
+  rmFileAsync,
+  copyFileAsync,
   fileExistsAsync,
   isFileAsync,
   mkdirRecursiveSync,
   mkdirRecursiveAsync,
   rmdirRecursiveAsync,
+  mkdtempAsync,
+  appendFileAsync,
 }

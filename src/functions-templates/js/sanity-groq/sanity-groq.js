@@ -37,22 +37,20 @@ const handler = async (event) => {
   // The rest of the query params are handled as parameters to the query
   const params = { ...event.queryStringParameters, query: null }
 
-  return client
-    .fetch(query, params)
-    .then((result) => {
-      return {
-        statusCode: 200,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(result),
-      }
-    })
-    .catch((error) => {
-      return {
-        headers: { 'Content-Type': 'application/json' },
-        statusCode: error.statusCode || 500,
-        body: error.responseBody || JSON.stringify({ error: 'Unknown error occurred' }),
-      }
-    })
+  try {
+    const result = await client.fetch(query, params)
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(result),
+    }
+  } catch (error) {
+    return {
+      headers: { 'Content-Type': 'application/json' },
+      statusCode: error.statusCode || 500,
+      body: error.responseBody || JSON.stringify({ error: 'Unknown error occurred' }),
+    }
+  }
 }
 
 module.exports = { handler }

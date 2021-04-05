@@ -1,7 +1,6 @@
 const { flags: flagsLib } = require('@oclif/command')
 const chalk = require('chalk')
 const clean = require('clean-deep')
-const get = require('lodash/get')
 const prettyjson = require('prettyjson')
 
 const Command = require('../../utils/command')
@@ -12,7 +11,7 @@ class StatusCommand extends Command {
     const { flags } = this.parse(StatusCommand)
 
     const current = globalConfig.get('userId')
-    const [accessToken] = this.getConfigToken()
+    const [accessToken] = await this.getConfigToken()
 
     if (!accessToken) {
       this.log(`Not logged in. Please log in to see site status.`)
@@ -26,16 +25,24 @@ class StatusCommand extends Command {
     this.log(`──────────────────────┐
  Current Netlify User │
 ──────────────────────┘`)
-    const accounts = await api.listAccountsForUser()
-    const user = await this.netlify.api.getCurrentUser()
+
+    let accounts
+    let user
+
+    try {
+      ;[accounts, user] = await Promise.all([api.listAccountsForUser(), api.getCurrentUser()])
+    } catch (error) {
+      if (error.status === 401) {
+        this.error(
+          'Your session has expired. Please try to re-authenticate by running `netlify logout` and `netlify login`.',
+        )
+      }
+    }
 
     const ghuser = this.netlify.globalConfig.get(`users.${current}.auth.github.user`)
     const accountData = {
-      Name: get(user, 'full_name'),
-      // 'Account slug': get(personal, 'slug'),
-      // 'Account id': get(personal, 'id'),
-      // Name: get(personal, 'billing_name'),
-      Email: get(user, 'email'),
+      Name: user.full_name,
+      Email: user.email,
       Github: ghuser,
     }
     const teamsData = {}
@@ -49,13 +56,6 @@ class StatusCommand extends Command {
     const cleanAccountData = clean(accountData)
 
     this.log(prettyjson.render(cleanAccountData))
-
-    if (!site.configPath) {
-      this.logJson({
-        account: cleanAccountData,
-      })
-      this.exit()
-    }
 
     if (!siteId) {
       this.warn('Did you run `netlify link` yet?')

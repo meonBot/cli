@@ -1,4 +1,4 @@
-# Netlify CLI
+# ![Netlify CLI](cli.png)
 
 [![Coverage Status](https://codecov.io/gh/netlify/cli/branch/master/graph/badge.svg)](https://codecov.io/gh/netlify/cli)
 [![npm version][npm-img]][npm] [![downloads][dl-img]][dl] [![netlify-status][netlify-img]][netlify] [![dependencies][david-img]][david] [![security][snyk-img]][snyk][![FOSSA Status](https://app.fossa.com/api/projects/custom%2B17679%2Fgit%40github.com%3Anetlify%2Fcli.git.svg?type=shield)](https://app.fossa.com/projects/custom%2B17679%2Fgit%40github.com%3Anetlify%2Fcli.git?ref=badge_shield)
@@ -26,6 +26,7 @@ See the [CLI command line reference](https://cli.netlify.com/commands/) to get s
   * [functions](#functions)
   * [init](#init)
   * [link](#link)
+  * [lm](#lm)
   * [login](#login)
   * [open](#open)
   * [sites](#sites)
@@ -33,6 +34,7 @@ See the [CLI command line reference](https://cli.netlify.com/commands/) to get s
   * [switch](#switch)
   * [unlink](#unlink)
   * [watch](#watch)
+  * [completion](#completion)
 - [Contributing](#contributing)
 - [Development](#development)
 - [License](#license)
@@ -42,7 +44,7 @@ See the [CLI command line reference](https://cli.netlify.com/commands/) to get s
 
 ## Installation
 
-Netlify CLI requires [Node.js](https://nodejs.org) version 8 or above. To install, run the following command from any directory in your terminal:
+Netlify CLI requires [Node.js](https://nodejs.org) version 10 or above. To install, run the following command from any directory in your terminal:
 
 ```bash
 npm install netlify-cli -g
@@ -127,6 +129,7 @@ Manage netlify functions
 | [`functions:build`](/docs/commands/functions.md#functionsbuild) | Build functions locally  |
 | [`functions:create`](/docs/commands/functions.md#functionscreate) | Create a new function locally  |
 | [`functions:invoke`](/docs/commands/functions.md#functionsinvoke) | Trigger a function while in netlify dev with simulated data, good for testing function calls including Netlify's Event Triggered Functions  |
+| [`functions:list`](/docs/commands/functions.md#functionslist) | List functions that exist locally  |
 
 
 ### [init](/docs/commands/init.md)
@@ -136,6 +139,17 @@ Configure continuous deployment for a new or existing site
 ### [link](/docs/commands/link.md)
 
 Link a local repo or project folder to an existing site on Netlify
+
+### [lm](/docs/commands/lm.md)
+
+Handle Netlify Large Media operations
+
+| Subcommand | description  |
+|:--------------------------- |:-----|
+| [`lm:info`](/docs/commands/lm.md#lminfo) | Show large media requirements information.  |
+| [`lm:install`](/docs/commands/lm.md#lminstall) | Configures your computer to use Netlify Large Media.  |
+| [`lm:setup`](/docs/commands/lm.md#lmsetup) | Configures your site to use Netlify Large Media.  |
+
 
 ### [login](/docs/commands/login.md)
 
@@ -182,6 +196,16 @@ Unlink a local folder from a Netlify site
 ### [watch](/docs/commands/watch.md)
 
 Watch for site deploy to finish
+
+### [completion](/docs/commands/completion.md)
+
+(Beta) Generate shell completion script
+
+| Subcommand | description  |
+|:--------------------------- |:-----|
+| [`completion:generate:alias`](/docs/commands/completion.md#completiongeneratealias) | Generates completion script for alias  |
+| [`completion:generate`](/docs/commands/completion.md#completiongenerate) | Generates completion script  |
+
 
 
 <!-- AUTO-GENERATED-CONTENT:END -->

@@ -31,6 +31,10 @@ Tests are run with:
 npm test
 ```
 
+**NOTE:** we run some integration tests against an active Netlify account. For these tests to pass you'll need to
+provide a Netlify auth token (using the `NETLIFY_AUTH_TOKEN` environment variable) or login via `./bin/run login` before
+running the tests.
+
 In watch mode:
 
 ```bash
@@ -82,13 +86,15 @@ We actively welcome your pull requests.
 1. Fork the repo and create your branch from `master`.
 2. If you've added code that should be tested, add tests.
 3. If you've changed APIs, update the documentation.
-4. Ensure the test suite passes.
-5. Make sure your code lints.
+4. Run `npm test` to run linting, formatting and tests.
+5. Make sure to sync the docs by running `npm run docs`.
 
 ## Releasing
 
-1. Install dependencies. `npm ci`.
-2. `npm run release`.
+1. Merge the release PR
+2. Switch to the default branch `git checkout master`
+3. Pull latest changes `git pull`
+4. Publish the package `npm publish`
 
 ## License
 

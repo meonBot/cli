@@ -25,7 +25,7 @@ class APICommand extends Command {
       table.setHeading('API Method', 'Docs Link')
       methods.forEach((method) => {
         const { operationId } = method
-        table.addRow(operationId, `https://open-api.netlify.com/#/operation/${operationId}`)
+        table.addRow(operationId, `https://open-api.netlify.com/#operation/${operationId}`)
       })
       this.log(table.toString())
       this.log()
@@ -50,7 +50,7 @@ class APICommand extends Command {
     }
     try {
       const apiResponse = await api[apiMethod](payload)
-      this.log(JSON.stringify(apiResponse, null, 2))
+      this.logJson(apiResponse)
     } catch (error) {
       this.error(error)
     }
